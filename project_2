@@ -1,0 +1,183 @@
+
+cat > install_web4_amplitude.sh << 'EOF'
+#!/bin/bash
+
+# ----------------------------------------
+# 1. 시스템 업데이트 및 필수 패키지 설치
+# ----------------------------------------
+echo "[1/7] 시스템 업데이트 및 필수 패키지 설치 중..."
+sudo dnf update -y
+sudo dnf install -y epel-release
+sudo dnf groupinstall -y "Development Tools"
+sudo dnf install -y openssl-devel bzip2-devel libffi-devel wget curl httpd httpd-devel mod_wsgi firewalld
+
+# ----------------------------------------
+# 2. Python 3.9 및 pip 설치
+# ----------------------------------------
+echo "[2/7] Python 3.9 및 pip 설치 중..."
+sudo dnf install -y python3.9 python3-devel
+
+# pip 수동 설치 (Rocky Linux 9는 python3.9-pip 미제공)
+curl -s https://bootstrap.pypa.io/get-pip.py | sudo python3.9
+sudo python3.9 -m pip install --upgrade pip
+sudo python3.9 -m pip install virtualenv
+
+# ----------------------------------------
+# 3. 방화벽 설정 (HTTP/HTTPS 허용)
+# ----------------------------------------
+echo "[3/7] 방화벽 설정 중..."
+sudo systemctl enable --now firewalld
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --permanent --add-service=https
+sudo firewall-cmd --reload
+
+# ----------------------------------------
+# 4. 프로젝트 폴더 및 가상 환경 설정
+# ----------------------------------------
+echo "[4/7] 프로젝트 폴더 구성 중..."
+PROJECT_DIR="/var/www/web4_amplitude"
+sudo mkdir -p $PROJECT_DIR/templates
+sudo chown -R $USER:$USER $PROJECT_DIR
+cd $PROJECT_DIR
+
+# 가상 환경 생성 및 패키지 설치
+python3.9 -m virtualenv venv
+source venv/bin/activate
+pip install flask numpy
+
+# ----------------------------------------
+# 5. Web4 Amplitude 코드 배포
+# ----------------------------------------
+echo "[5/7] Web4 Amplitude 코드 배포 중..."
+
+# amplitude_node.py 생성
+cat > $PROJECT_DIR/amplitude_node.py << 'EOL'
+import numpy as np
+import re
+from flask import Flask, request, Response, render_template_string
+from concurrent.futures import ThreadPoolExecutor
+
+class AmplitudeWebNode:
+    def __init__(self, node_id):
+        self.node_id = node_id
+        self.token_to_id = {}
+        self.id_to_token = {}
+        self.pages = {}
+
+    def tokenize(self, html):
+        tokens = re.findall(r"<[^>]+>|[^<\s]+", html)
+        return tokens
+
+    def store_page(self, page_id, html):
+        tokens = self.tokenize(html)
+        unique_tokens = set(tokens)
+        for token in unique_tokens:
+            if token not in self.token_to_id:
+                token_id = len(self.token_to_id) + 1
+                self.token_to_id[token] = token_id
+                self.id_to_token[token_id] = token
+
+        ids = [self.token_to_id[token] for token in tokens]
+        norm = np.sqrt(sum(i ** 2 for i in ids))
+        amplitudes = [i / norm for i in ids]
+        self.pages[page_id] = (amplitudes, norm)
+
+    def reconstruct_html(self, page_id):
+        amplitudes, norm = self.pages[page_id]
+        ids = [round(a * norm) for a in amplitudes]
+        tokens = [self.id_to_token[i] for i in ids]
+        html = "".join(tokens)
+        return html
+
+# 노드 및 샘플 페이지 초기화
+nodes = [AmplitudeWebNode(i) for i in range(3)]
+sample_pages = {
+    "google": "<!doctype html><html><head><title>Google</title><style>body{font-family:Arial,sans-serif;text-align:center;margin-top:100px;}.search-box{width:500px;padding:10px;border-radius:24px;border:1px solid #dfe1e5;}.search-button{background-color:#f8f9fa;border:1px solid #f8f9fa;padding:8px 16px;margin:11px 4px;}.logo{margin-bottom:20px;}</style></head><body><div class='logo'><span style='color:#4285F4;'>G</span><span style='color:#EA4335;'>o</span><span style='color:#FBBC05;'>o</span><span style='color:#4285F4;'>g</span><span style='color:#34A853;'>l</span><span style='color:#EA4335;'>e</span></div><input type='text' class='search-box'><div><button class='search-button'>Google Search</button><button class='search-button'>I'm Feeling Lucky</button></div></body></html>",
+    "naver": "<!doctype html><html><head><title>Naver</title><style>body{font-family:'Nanum Gothic',sans-serif;text-align:center;margin-top:50px;}.search-box{width:500px;padding:15px;border:2px solid #03C75A;}.search-button{background-color:#03C75A;color:white;border:none;padding:15px 20px;}.logo{margin-bottom:20px;color:#03C75A;font-size:40px;font-weight:bold;}.nav{margin-top:20px;}</style></head><body><div class='logo'>NAVER</div><input type='text' class='search-box'><button class='search-button'>검색</button><div class='nav'><a href='#'>메일</a> | <a href='#'>카페</a> | <a href='#'>블로그</a> | <a href='#'>지식iN</a></div></body></html>",
+    "amazon": "<!doctype html><html><head><title>Amazon</title><style>body{font-family:Arial,sans-serif;margin:0;padding:0;}.header{background-color:#232F3E;padding:10px;color:white;}.logo{color:white;font-size:24px;font-weight:bold;}.search-box{width:80%;padding:10px;}.search-button{background-color:#F3A847;border:none;padding:10px;}.products{display:flex;flex-wrap:wrap;justify-content:center;}.product{width:200px;margin:10px;padding:10px;border:1px solid #DDD;}</style></head><body><div class='header'><span class='logo'>Amazon</span></div><div style='text-align:center;padding:20px;'><input type='text' class='search-box' placeholder='Search Amazon'><button class='search-button'>Search</button></div><div class='products'><div class='product'>Product 1</div><div class='product'>Product 2</div><div class='product'>Product 3</div></div></body></html>"
+}
+
+for key, html in sample_pages.items():
+    idx = sum(ord(c) for c in key) % len(nodes)
+    nodes[idx].store_page(key, html)
+
+# Flask 앱 설정
+app = Flask(__name__)
+thread_pool = ThreadPoolExecutor()
+
+def find_node_for_query(query, nodes):
+    idx = sum(ord(c) for c in query) % len(nodes)
+    return nodes[idx]
+
+@app.route('/')
+def home():
+    return "<h1>Web4 Amplitude Server</h1><ul><li><a href='/query?q=google'>Google</a></li><li><a href='/query?q=naver'>Naver</a></li><li><a href='/query?q=amazon'>Amazon</a></li></ul>"
+
+@app.route('/query')
+def query():
+    keyword = request.args.get('q', '')
+    node = find_node_for_query(keyword, nodes)
+    if keyword in node.pages:
+        html = node.reconstruct_html(keyword)
+        return Response(html, mimetype='text/html')
+    else:
+        return f"<h3>Page '{keyword}' not found</h3>", 404
+EOL
+
+# WSGI 파일 생성
+cat > $PROJECT_DIR/web4_amplitude.wsgi << 'EOL'
+import sys
+import os
+
+sys.path.insert(0, '/var/www/web4_amplitude')
+from amplitude_node import app as application
+EOL
+
+# ----------------------------------------
+# 6. Apache 설정
+# ----------------------------------------
+echo "[6/7] Apache 설정 중..."
+
+# 가상 호스트 설정
+sudo tee /etc/httpd/conf.d/web4_amplitude.conf > /dev/null << 'EOL'
+<VirtualHost *:80>
+    ServerName localhost
+    WSGIDaemonProcess web4_amplitude python-home=/var/www/web4_amplitude/venv python-path=/var/www/web4_amplitude
+    WSGIScriptAlias / /var/www/web4_amplitude/web4_amplitude.wsgi
+
+    <Directory /var/www/web4_amplitude>
+        WSGIProcessGroup web4_amplitude
+        WSGIApplicationGroup %{GLOBAL}
+        Require all granted
+    </Directory>
+
+    ErrorLog /var/log/httpd/web4_error.log
+    CustomLog /var/log/httpd/web4_access.log combined
+</VirtualHost>
+EOL
+
+# SELinux 설정
+sudo setsebool -P httpd_unified 1
+sudo setsebool -P httpd_can_network_connect 1
+sudo restorecon -Rv /var/www/web4_amplitude
+
+# Apache 재시작
+sudo systemctl restart httpd
+
+# ----------------------------------------
+# 7. 완료 메시지
+# ----------------------------------------
+echo "[7/7] 설치 완료!"
+echo "----------------------------------------"
+echo "Web4 Amplitude 서버가 정상 설치되었습니다."
+echo "접속 URL: http://$(hostname -I | awk '{print $1}')"
+echo "----------------------------------------"
+
+# 1. 스크립트 다운로드
+curl -o install_web4_amplitude.sh https://gist.githubusercontent.com/your-account/.../raw/install_web4_amplitude.sh
+
+# 2. 실행 권한 부여
+chmod +x install_web4_amplitude.sh
+
+# 3. 스크립트 실행 (sudo 필요)
+sudo ./install_web4_amplitude.sh
