@@ -1,0 +1,91 @@
+import numpy as np
+import re
+from flask import Flask, request, Response
+from concurrent.futures import ThreadPoolExecutor
+
+# 진폭 기반 Web4 노드 클래스
+class AmplitudeWebNode:
+    def __init__(self, node_id):
+        self.node_id = node_id
+        self.token_to_id = {}
+        self.id_to_token = {}
+        self.pages = {}
+
+    def tokenize(self, html):
+        # 간단한 토큰화 (공백 기준 + 태그 및 속성 유지)
+        tokens = re.findall(r"<[^>]+>|[^<\s]+", html)
+        return tokens
+
+    def store_page(self, page_id, html):
+        tokens = self.tokenize(html)
+        unique_tokens = set(tokens)
+        for token in unique_tokens:
+            if token not in self.token_to_id:
+                token_id = len(self.token_to_id) + 1
+                self.token_to_id[token] = token_id
+                self.id_to_token[token_id] = token
+
+        ids = [self.token_to_id[token] for token in tokens]
+        norm = np.sqrt(sum(i ** 2 for i in ids))
+        amplitudes = [i / norm for i in ids]
+        self.pages[page_id] = (amplitudes, norm)
+
+    def reconstruct_html(self, page_id):
+        amplitudes, norm = self.pages[page_id]
+        ids = [round(a * norm) for a in amplitudes]
+        tokens = [self.id_to_token[i] for i in ids]
+        html = "".join(tokens)
+        return html
+
+# 다수 노드 구성
+nodes = [AmplitudeWebNode(i) for i in range(3)]
+
+# 샘플 10개 페이지 생성
+sample_pages = {
+    "page1": "<html><head><title>Web4 Red</title><style>body{background:red;color:white;}</style></head><body><h1>Red Page</h1><button onclick=\"alert('Red!')\">Click</button></body></html>",
+    "page2": "<html><head><title>Web4 Yellow</title><style>body{background:yellow;color:black;}</style></head><body><h1>Yellow Page</h1><button onclick=\"alert('Yellow!')\">Click</button></body></html>",
+    "page3": "<html><head><title>Web4 Blue</title><style>body{background:blue;color:white;}</style></head><body><h1>Blue Page</h1><button onclick=\"alert('Blue!')\">Click</button></body></html>",
+    "page4": "<html><head><title>Web4 Green</title><style>body{background:green;color:white;}</style></head><body><h1>Green Page</h1><button onclick=\"alert('Green!')\">Click</button></body></html>",
+    "page5": "<html><head><title>Web4 Gray</title><style>body{background:gray;color:black;}</style></head><body><h1>Gray Page</h1><button onclick=\"alert('Gray!')\">Click</button></body></html>",
+    "page6": "<html><head><title>Web4 Pink</title><style>body{background:pink;color:black;}</style></head><body><h1>Pink Page</h1><button onclick=\"alert('Pink!')\">Click</button></body></html>",
+    "page7": "<html><head><title>Web4 Black</title><style>body{background:black;color:white;}</style></head><body><h1>Black Page</h1><button onclick=\"alert('Black!')\">Click</button></body></html>",
+    "page8": "<html><head><title>Web4 Orange</title><style>body{background:orange;color:black;}</style></head><body><h1>Orange Page</h1><button onclick=\"alert('Orange!')\">Click</button></body></html>",
+    "page9": "<html><head><title>Web4 Violet</title><style>body{background:violet;color:white;}</style></head><body><h1>Violet Page</h1><button onclick=\"alert('Violet!')\">Click</button></body></html>",
+    "page10": "<html><head><title>Web4 Brown</title><style>body{background:brown;color:white;}</style></head><body><h1>Brown Page</h1><button onclick=\"alert('Brown!')\">Click</button></body></html>",
+}
+
+# 각 노드에 페이지 분산저장
+for key, html in sample_pages.items():
+    idx = sum(ord(c) for c in key) % len(nodes)
+    nodes[idx].store_page(key, html)
+
+# Flask 웹 서버
+app = Flask(__name__)
+thread_pool = ThreadPoolExecutor()
+
+def find_node_for_query(query, nodes):
+    idx = sum(ord(c) for c in query) % len(nodes)
+    return nodes[idx]
+
+@app.route('/')
+def home():
+    links = "".join([f'<li><a href="/query?q=page{i}">Go to Page {i}</a></li>' for i in range(1, 11)])
+    return f"<h1>Web4 Amplitude Server</h1><ul>{links}</ul>"
+
+@app.route('/query')
+def query():
+    keyword = request.args.get('q', '')
+    node = find_node_for_query(keyword, nodes)
+
+    def process_request():
+        if keyword in node.pages:
+            html = node.reconstruct_html(keyword)
+            return Response(html, mimetype='text/html')
+        else:
+            return f"<h3>Page '{keyword}' not found on Node {node.node_id}</h3>", 404
+
+    future = thread_pool.submit(process_request)
+    return future.result()
+
+if __name__ == '__main__':
+    app.run(debug=True)
